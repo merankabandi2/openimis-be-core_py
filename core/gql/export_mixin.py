@@ -101,7 +101,7 @@ class ExportableQueryMixin:
 
         def exporter(cls, self, info, **kwargs):
             custom_filters = kwargs.pop("customFilters", None)
-            export_fields = [cls._adjust_notation(f) for f in kwargs.pop("fields")]
+            export_fields = [cls._adjust_notation(f or "") for f in kwargs.pop("fields", None) or []]
             fields_mapping = json.loads(kwargs.pop("fields_columns"))
             file_format = kwargs.pop("file_format", "csv")
 

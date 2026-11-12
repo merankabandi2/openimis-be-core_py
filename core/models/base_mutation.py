@@ -1,8 +1,9 @@
 from django.contrib.auth import get_user_model
 from django.core.exceptions import FieldDoesNotExist
 from django.core.files.base import ContentFile
-from django.db.models import DO_NOTHING, DateTimeField, JSONField
+from django.db.models import DO_NOTHING, DateTimeField, ForeignKey, JSONField
 from django.db.models.constants import LOOKUP_SEP
+from django.db.models.fields.json import KeyTransform
 import uuid
 from pandas import DataFrame
 from datetime import datetime as py_datetime
@@ -42,16 +43,23 @@ def validate_export_field_path(model, path, annotations=()):
     Accepts `path` (Django `__` notation) when, walked from `model`, every segment
     is a field of the current model, every relation is a forward foreign key or
     one-to-one that does not lead to an account model, and nothing follows a
-    scalar field. A relation to the auth user model is accepted only when it is
-    followed by USER_MODEL_EXPORTABLE_FIELD as the last segment. Segments after a
-    JSON field are keys. A queryset annotation is accepted as a whole path.
+    scalar field. An account model, as the root or as a relation target, is
+    accepted only when it is the auth user model and the rest of the path is
+    USER_MODEL_EXPORTABLE_FIELD. Segments after a JSON field are keys, except
+    that a key below the first level may not be a key-transform lookup name.
+    A queryset annotation is accepted as a whole path.
     Raises ExportFieldNotAllowed otherwise.
     """
-    if path in annotations:
-        return
     account_models = _account_models()
     user_model = get_user_model()._meta.concrete_model
     segments = path.split(LOOKUP_SEP)
+    root = model._meta.concrete_model
+    if root in account_models:
+        if root is user_model and segments == [USER_MODEL_EXPORTABLE_FIELD]:
+            return
+        raise ExportFieldNotAllowed(path)
+    if path in annotations:
+        return
     current = model
     for index, name in enumerate(segments):
         if current is None:
@@ -61,12 +69,15 @@ def validate_export_field_path(model, path, annotations=()):
         except FieldDoesNotExist:
             raise ExportFieldNotAllowed(path) from None
         if isinstance(field, JSONField):
+            nested_keys = segments[index + 2:]
+            if any(key in KeyTransform.get_lookups() for key in nested_keys):
+                raise ExportFieldNotAllowed(path)
             return
         if not field.is_relation:
             current = None
             continue
-        forward = field.concrete and not field.auto_created
-        if not (forward and (field.many_to_one or field.one_to_one)):
+        # ForeignKey covers OneToOneField; auto-created ones are parent links.
+        if not (isinstance(field, ForeignKey) and not field.auto_created):
             raise ExportFieldNotAllowed(path)
         target = field.related_model._meta.concrete_model
         if target in account_models:
@@ -111,6 +122,8 @@ class ExportableQueryModel(models.Model):
     def create_csv_export(
         qs, values, user, column_names=None, patches=None, file_format="csv"
     ):
+        if not values:
+            raise ExportFieldNotAllowed("")
         annotations = set(qs.query.annotations)
         for path in values:
             validate_export_field_path(qs.model, path, annotations)
