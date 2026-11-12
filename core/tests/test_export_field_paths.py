@@ -124,7 +124,6 @@ class ExportFieldPathTest(TestCase):
 
     def test_user_created_into_account_is_refused(self):
         qs = AuditedExportRecord.objects.all()
-        self.assertRefused(qs, "user_created__username")
         self.assertRefused(qs, "user_created__i_user__password")
         self.assertRefused(qs, "user_created__i_user__private_key")
 
@@ -140,7 +139,22 @@ class ExportFieldPathTest(TestCase):
     def test_forward_relation_into_account_on_real_table_is_refused(self):
         qs = MutationLog.objects.filter(id=self.mutation_log.id)
         self.assertRefused(qs, "user__i_user__password")
-        self.assertRefused(qs, "user__username")
+        self.assertRefused(qs, "user__version")
+
+    def test_user_model_fields_other_than_username_are_refused(self):
+        qs = AuditedExportRecord.objects.all()
+        self.assertRefused(qs, "user_created__id")
+        self.assertRefused(qs, "user_created__pk")
+        self.assertRefused(qs, "user_created__version")
+        self.assertRefused(qs, "user_created__password")
+        self.assertRefused(qs, "user_updated__is_superuser")
+
+    def test_hop_or_lookup_after_user_model_username_is_refused(self):
+        qs = AuditedExportRecord.objects.all()
+        self.assertRefused(qs, "user_created__username__lower")
+        self.assertRefused(qs, "user_created__i_user__login_name")
+        self.assertRefused(qs, "user_created__t_user__username")
+        self.assertRefused(qs, "user_updated__groups__name")
 
     def test_reverse_relation_is_refused(self):
         qs = MutationLog.objects.filter(id=self.mutation_log.id)
@@ -227,6 +241,21 @@ class ExportFieldPathTest(TestCase):
         qs = RoleMutation.objects.filter(id=self.role_mutation.id)
         rows = self._rows(self._export(qs, ["mutation__json_ext__head__first_name"]))
         self.assertEqual(rows[0]["mutation__json_ext__head__first_name"], "Ada")
+
+    def test_user_model_username_is_accepted_through_audit_relations(self):
+        from core.models.base_mutation import validate_export_field_path
+
+        self.assertIsNone(
+            validate_export_field_path(AuditedExportRecord, "user_created__username")
+        )
+        self.assertIsNone(
+            validate_export_field_path(AuditedExportRecord, "user_updated__username")
+        )
+
+    def test_user_model_username_is_exported(self):
+        qs = MutationLog.objects.filter(id=self.mutation_log.id)
+        rows = self._rows(self._export(qs, ["client_mutation_label", "user__username"]))
+        self.assertEqual(rows[0]["user__username"], self.user.username)
 
     def test_queryset_annotation_is_exported(self):
         qs = MutationLog.objects.filter(id=self.mutation_log.id).annotate(

@@ -22,6 +22,10 @@ class ExportFieldNotAllowed(ValueError):
         super().__init__(f"{self.MESSAGE_KEY}: {path}")
 
 
+# The only column of the auth user model an export may read, as the last segment.
+USER_MODEL_EXPORTABLE_FIELD = "username"
+
+
 def _account_models():
     """
     Models holding login identities and credentials, with their history tables.
@@ -38,14 +42,18 @@ def validate_export_field_path(model, path, annotations=()):
     Accepts `path` (Django `__` notation) when, walked from `model`, every segment
     is a field of the current model, every relation is a forward foreign key or
     one-to-one that does not lead to an account model, and nothing follows a
-    scalar field. Segments after a JSON field are keys. A queryset annotation is
-    accepted as a whole path. Raises ExportFieldNotAllowed otherwise.
+    scalar field. A relation to the auth user model is accepted only when it is
+    followed by USER_MODEL_EXPORTABLE_FIELD as the last segment. Segments after a
+    JSON field are keys. A queryset annotation is accepted as a whole path.
+    Raises ExportFieldNotAllowed otherwise.
     """
     if path in annotations:
         return
     account_models = _account_models()
+    user_model = get_user_model()._meta.concrete_model
+    segments = path.split(LOOKUP_SEP)
     current = model
-    for name in path.split(LOOKUP_SEP):
+    for index, name in enumerate(segments):
         if current is None:
             raise ExportFieldNotAllowed(path)
         try:
@@ -60,7 +68,10 @@ def validate_export_field_path(model, path, annotations=()):
         forward = field.concrete and not field.auto_created
         if not (forward and (field.many_to_one or field.one_to_one)):
             raise ExportFieldNotAllowed(path)
-        if field.related_model._meta.concrete_model in account_models:
+        target = field.related_model._meta.concrete_model
+        if target in account_models:
+            if target is user_model and segments[index + 1:] == [USER_MODEL_EXPORTABLE_FIELD]:
+                return
             raise ExportFieldNotAllowed(path)
         current = field.related_model
 
