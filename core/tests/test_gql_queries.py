@@ -1,5 +1,6 @@
 import json
 
+from django.apps import apps
 from django.test import TestCase, override_settings
 from django.utils.translation import gettext
 from graphql_relay import to_global_id
@@ -9,10 +10,12 @@ from core.gql.max_length_constraints import build_max_length_constraints
 from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase, BaseTestContext
 from core.test_helpers import create_test_interactive_user, create_test_role
 
-try:
-    from insuree.models import Insuree
-except ImportError:
-    Insuree = None
+Insuree = None
+if apps.is_installed("insuree"):
+    try:
+        from insuree.models import Insuree
+    except ImportError:
+        Insuree = None
 
 
 class MaxLengthConstraintsTestCase(TestCase):

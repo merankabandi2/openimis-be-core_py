@@ -4,10 +4,14 @@ from graphene.types.generic import GenericScalar
 import graphene
 from django.apps import apps
 
-try:
-    from insuree.models import Insuree
-except ImportError:
-    Insuree = None
+# `insuree` can be importable (pulled in as a dependency of another package) without
+# being in INSTALLED_APPS; importing its models then raises RuntimeError, not ImportError.
+Insuree = None
+if apps.is_installed("insuree"):
+    try:
+        from insuree.models import Insuree
+    except ImportError:
+        Insuree = None
 
 
 def get_model(model_name):
