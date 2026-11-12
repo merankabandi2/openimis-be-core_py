@@ -1,14 +1,68 @@
+from django.contrib.auth import get_user_model
+from django.core.exceptions import FieldDoesNotExist
 from django.core.files.base import ContentFile
-from django.db.models import DO_NOTHING, DateTimeField
+from django.db.models import DO_NOTHING, DateTimeField, JSONField
+from django.db.models.constants import LOOKUP_SEP
 import uuid
 from pandas import DataFrame
 from datetime import datetime as py_datetime
 from . import UUIDModel, ExtendableModel
 from .versioned_model import models
 import logging
-from .user import User, _query_export_path, _get_default_expire_date
+from .user import User, InteractiveUser, TechnicalUser, _query_export_path, _get_default_expire_date
 
 logger = logging.getLogger(__name__)
+
+
+class ExportFieldNotAllowed(ValueError):
+    MESSAGE_KEY = "core.export.field_not_allowed"
+
+    def __init__(self, path):
+        self.path = path
+        super().__init__(f"{self.MESSAGE_KEY}: {path}")
+
+
+def _account_models():
+    """
+    Models holding login identities and credentials, with their history tables.
+    """
+    account_models = {get_user_model(), InteractiveUser, TechnicalUser}
+    history_models = {
+        model.history.model for model in account_models if hasattr(model, "history")
+    }
+    return {model._meta.concrete_model for model in account_models | history_models}
+
+
+def validate_export_field_path(model, path, annotations=()):
+    """
+    Accepts `path` (Django `__` notation) when, walked from `model`, every segment
+    is a field of the current model, every relation is a forward foreign key or
+    one-to-one that does not lead to an account model, and nothing follows a
+    scalar field. Segments after a JSON field are keys. A queryset annotation is
+    accepted as a whole path. Raises ExportFieldNotAllowed otherwise.
+    """
+    if path in annotations:
+        return
+    account_models = _account_models()
+    current = model
+    for name in path.split(LOOKUP_SEP):
+        if current is None:
+            raise ExportFieldNotAllowed(path)
+        try:
+            field = current._meta.pk if name == "pk" else current._meta.get_field(name)
+        except FieldDoesNotExist:
+            raise ExportFieldNotAllowed(path) from None
+        if isinstance(field, JSONField):
+            return
+        if not field.is_relation:
+            current = None
+            continue
+        forward = field.concrete and not field.auto_created
+        if not (forward and (field.many_to_one or field.one_to_one)):
+            raise ExportFieldNotAllowed(path)
+        if field.related_model._meta.concrete_model in account_models:
+            raise ExportFieldNotAllowed(path)
+        current = field.related_model
 
 
 class ExportableQueryModel(models.Model):
@@ -46,6 +100,9 @@ class ExportableQueryModel(models.Model):
     def create_csv_export(
         qs, values, user, column_names=None, patches=None, file_format="csv"
     ):
+        annotations = set(qs.query.annotations)
+        for path in values:
+            validate_export_field_path(qs.model, path, annotations)
         if patches is None:
             patches = []
         sql = qs.query.sql_with_params()
