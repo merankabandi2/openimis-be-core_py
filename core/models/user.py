@@ -312,7 +312,22 @@ class InteractiveUser(OpenIMISMigrationModel):
 
     @property
     def user(self):
-        return self.user_set.first()
+        # The linked core user is looked up once per instance: a rights check
+        # reaches this property many times per request. The memo lives on the
+        # instance only and is dropped by refresh_from_db(); it is not part of
+        # the cached model data (clean_fk only copies fields), so an instance
+        # rebuilt from the object cache starts without it. A missing link is
+        # not memoised.
+        linked = self.__dict__.get("_linked_core_user")
+        if linked is None:
+            linked = self.user_set.first()
+            if linked is not None:
+                self.__dict__["_linked_core_user"] = linked
+        return linked
+
+    def refresh_from_db(self, *args, **kwargs):
+        self.__dict__.pop("_linked_core_user", None)
+        return super().refresh_from_db(*args, **kwargs)
 
     @stored_password.setter
     def stored_password(self, value):
@@ -327,19 +342,15 @@ class InteractiveUser(OpenIMISMigrationModel):
 
     @property
     def is_superuser(self):
-        # The stored flag is the only thing that makes a superuser. It used to
-        # fall back on `is_imis_admin`, which resolved the legacy IsSystem=64
-        # role: holding that role silently granted every right, bypassing the
-        # declared-rights layer entirely.
-        # bind once: `user` is a query, and this used to run it twice per call
+        # The stored flag of the linked core user is the only thing that makes
+        # a superuser; no legacy role grants it.
+        # `user` is read once into a local.
         user = self.user
         return bool(user and user.is_superuser)
 
     @is_superuser.setter
     def is_superuser(self, value):
-        # likewise, and here it was also a correctness bug: each `self.user`
-        # returned a *different* instance, so the flag was set on one object
-        # and a second, unmodified one was saved
+        # The flag is set on, and saved from, the same linked user instance.
         user = self.user
         if user:
             user.is_superuser = value
