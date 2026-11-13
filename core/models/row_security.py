@@ -56,6 +56,7 @@ location answers instead. A fallback here is another path, not a special case.
 import logging
 
 from core.cache_control import cache_delete, cache_get, cache_set
+from django.conf import settings
 from django.db import DatabaseError
 from django.db.models import Q, TextField
 from django.db.models.functions import Cast
@@ -209,7 +210,9 @@ class RowSecurityMixin:
         """
         if queryset is None:
             queryset = cls._default_manager.all()
-        if cls.row_scope is None:
+        # With ROW_SECURITY off no declared scope narrows anything, whichever
+        # kind it is; the same rule as the hand-written get_queryset overrides.
+        if cls.row_scope is None or not settings.ROW_SECURITY:
             return queryset
         return cls.row_scope.filter(queryset, cls.scoping_user(user), cls)
 
