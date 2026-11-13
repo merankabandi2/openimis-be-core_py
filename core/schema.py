@@ -598,6 +598,10 @@ class OpenIMISMutation(graphene.relay.ClientIDMutation):
 
         metadata = {}
         try:
+            # The task or a receiver may have rewritten the stored input since
+            # this request read it (queued mutations); build on the row's
+            # current content so the write below never restores a stale one.
+            mutation_log.refresh_from_db(fields=["json_content"])
             if mutation_log.json_content:
                 metadata = json.loads(mutation_log.json_content)
             elif data:
