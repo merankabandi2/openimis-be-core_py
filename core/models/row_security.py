@@ -139,19 +139,14 @@ class RowSecurityMixin:
         ``prefix`` is the path from the queryset being filtered to *this* model,
         including the trailing ``__``. ``paths`` overrides this model's declared
         paths for a one-off call. Returns ``[]`` -- which splats to nothing --
-        when there is no location scope to apply or ROW_SECURITY is off, so the
-        call is always safe to write.
+        when there is no location scope to apply, so the call is always safe to
+        write.
 
         ``link_types`` names the credential that governs these rows (claim ->
         CLAIM_ADMIN, insuree -> ENROLMENT). It is carried now and honoured once
         UBA ships; a credential must not narrow a scope it says nothing about,
         so it is per-call and never a global default.
         """
-        # Every scope (get_queryset, target_queryset, explicit calls) is applied
-        # here: with ROW_SECURITY off there is nothing to narrow, as in
-        # LocationManager and the hand-written get_queryset overrides.
-        if not settings.ROW_SECURITY:
-            return []
         paths = tuple(paths) if paths else cls.location_paths()
         if not paths:
             return []
@@ -215,7 +210,9 @@ class RowSecurityMixin:
         """
         if queryset is None:
             queryset = cls._default_manager.all()
-        if cls.row_scope is None:
+        # With ROW_SECURITY off no declared scope narrows anything, whichever
+        # kind it is; the same rule as the hand-written get_queryset overrides.
+        if cls.row_scope is None or not settings.ROW_SECURITY:
             return queryset
         return cls.row_scope.filter(queryset, cls.scoping_user(user), cls)
 

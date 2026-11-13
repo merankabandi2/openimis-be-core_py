@@ -12,8 +12,13 @@ from django.test import TestCase, override_settings
 
 from core.gql import ScopedQuerysetMixin
 from core.models import Language, ModuleConfiguration, Role, User
+from core.models import target_queryset
 from core.models.row_security import RowSecurityMixin, present_content_type_ids
-from core.test_helpers import create_test_interactive_user, create_test_role
+from core.test_helpers import (
+    create_right_only_user,
+    create_test_interactive_user,
+    create_test_role,
+)
 
 
 def resolve_info(user):
@@ -537,58 +542,62 @@ class GenericScopeTest(TestCase):
 
 
 class RowSecuritySettingTest(TestCase):
-    """A declared scope applies only while ROW_SECURITY is on."""
+    """A declared scope applies only while ROW_SECURITY is on.
+
+    Both models below declare ``row_scope`` and have no ``get_queryset`` of
+    their own, so the shared mixin is what answers.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from individual.models import GroupDataSource
+        from location.models import Location
+        from location.test_helpers import create_basic_test_locations
+        from payroll.models import PaymentPoint
+
+        create_basic_test_locations()
+        cls.district_a = Location.objects.get(code="R1D1", validity_to__isnull=True)
+        cls.district_b = Location.objects.get(code="R2D1", validity_to__isnull=True)
+        cls.admin = create_test_interactive_user(username="rowsec_setting_admin")
+        cls.user = create_right_only_user(
+            "rowsec_setting_user", [], district_codes=["R1D1"]
+        )
+        cls.point_in = PaymentPoint(name="RS in", location=cls.district_a)
+        cls.point_in.save(user=cls.admin)
+        cls.point_out = PaymentPoint(name="RS out", location=cls.district_b)
+        cls.point_out.save(user=cls.admin)
+        cls.orphan = GroupDataSource(group=None)
+        cls.orphan.save(user=cls.admin)
 
     def setUp(self):
-        from claim.models import Claim
-        from core.models import LocationScope
+        cache.clear()
 
-        self.Claim = Claim
-        previous = vars(Claim).get("row_scope")
-        Claim.row_scope = LocationScope("health_facility__location")
-
-        def restore():
-            if previous is not None:
-                Claim.row_scope = previous
-            else:
-                delattr(Claim, "row_scope")
-
-        self.addCleanup(restore)
-        role = create_test_role(perm_names=[], name="RowSecSettingRole")
-        self.user = create_test_interactive_user(
-            username="rowsec_setting",
-            roles=[role.id],
-            custom_props={"is_superuser": False},
-        )
-
-    def test_scope_applies_when_row_security_is_on(self):
-        from core.models import target_queryset
+    def test_location_scope_applies_when_on(self):
+        from payroll.models import PaymentPoint
 
         with override_settings(ROW_SECURITY=True):
-            base = self.Claim.objects.all()
-            self.assertTrue(self.Claim.filter_location(self.user))
-            self.assertIn(
-                "tblHF", str(self.Claim.get_queryset(base, self.user).query)
-            )
-            self.assertIn(
-                "tblHF", str(target_queryset(self.Claim, self.user).query)
-            )
+            ids = set(target_queryset(PaymentPoint, self.user).values_list("id", flat=True))
+        self.assertIn(self.point_in.id, ids)
+        self.assertNotIn(self.point_out.id, ids)
 
-    def test_scope_is_a_no_op_when_row_security_is_off(self):
-        from core.models import target_queryset
+    def test_location_scope_is_a_no_op_when_off(self):
+        from payroll.models import PaymentPoint
 
         with override_settings(ROW_SECURITY=False):
-            base = self.Claim.objects.all()
-            self.assertEqual(self.Claim.filter_location(self.user), [])
-            self.assertNotIn(
-                "tblHF", str(self.Claim.get_queryset(base, self.user).query)
-            )
-            self.assertNotIn(
-                "tblHF", str(target_queryset(self.Claim, self.user).query)
-            )
+            ids = set(target_queryset(PaymentPoint, self.user).values_list("id", flat=True))
+        self.assertIn(self.point_in.id, ids)
+        self.assertIn(self.point_out.id, ids)
 
-    def test_anonymous_is_not_filtered_when_row_security_is_off(self):
-        from django.contrib.auth.models import AnonymousUser
+    def test_parent_scope_hides_a_parentless_row_when_on(self):
+        from individual.models import GroupDataSource
+
+        with override_settings(ROW_SECURITY=True):
+            ids = set(target_queryset(GroupDataSource, self.user).values_list("id", flat=True))
+        self.assertNotIn(self.orphan.id, ids)
+
+    def test_parent_scope_does_not_narrow_when_off(self):
+        from individual.models import GroupDataSource
 
         with override_settings(ROW_SECURITY=False):
-            self.assertEqual(self.Claim.filter_location(AnonymousUser()), [])
+            ids = set(target_queryset(GroupDataSource, self.user).values_list("id", flat=True))
+        self.assertIn(self.orphan.id, ids)
