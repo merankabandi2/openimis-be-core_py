@@ -56,6 +56,7 @@ location answers instead. A fallback here is another path, not a special case.
 import logging
 
 from core.cache_control import cache_delete, cache_get, cache_set
+from django.conf import settings
 from django.db import DatabaseError
 from django.db.models import Q, TextField
 from django.db.models.functions import Cast
@@ -138,14 +139,19 @@ class RowSecurityMixin:
         ``prefix`` is the path from the queryset being filtered to *this* model,
         including the trailing ``__``. ``paths`` overrides this model's declared
         paths for a one-off call. Returns ``[]`` -- which splats to nothing --
-        when there is no location scope to apply, so the call is always safe to
-        write.
+        when there is no location scope to apply or ROW_SECURITY is off, so the
+        call is always safe to write.
 
         ``link_types`` names the credential that governs these rows (claim ->
         CLAIM_ADMIN, insuree -> ENROLMENT). It is carried now and honoured once
         UBA ships; a credential must not narrow a scope it says nothing about,
         so it is per-call and never a global default.
         """
+        # Every scope (get_queryset, target_queryset, explicit calls) is applied
+        # here: with ROW_SECURITY off there is nothing to narrow, as in
+        # LocationManager and the hand-written get_queryset overrides.
+        if not settings.ROW_SECURITY:
+            return []
         paths = tuple(paths) if paths else cls.location_paths()
         if not paths:
             return []

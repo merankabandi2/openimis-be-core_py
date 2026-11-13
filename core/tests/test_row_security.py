@@ -8,7 +8,7 @@ from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.core.cache import cache
 from django.db import DatabaseError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from core.gql import ScopedQuerysetMixin
 from core.models import Language, ModuleConfiguration, Role, User
@@ -534,3 +534,61 @@ class GenericScopeTest(TestCase):
         # ParentScope cannot compose a path here, so it restricts through the
         # parent's queryset instead
         self.assertIn("tblInvoice", str(scoped.query))
+
+
+class RowSecuritySettingTest(TestCase):
+    """A declared scope applies only while ROW_SECURITY is on."""
+
+    def setUp(self):
+        from claim.models import Claim
+        from core.models import LocationScope
+
+        self.Claim = Claim
+        previous = vars(Claim).get("row_scope")
+        Claim.row_scope = LocationScope("health_facility__location")
+
+        def restore():
+            if previous is not None:
+                Claim.row_scope = previous
+            else:
+                delattr(Claim, "row_scope")
+
+        self.addCleanup(restore)
+        role = create_test_role(perm_names=[], name="RowSecSettingRole")
+        self.user = create_test_interactive_user(
+            username="rowsec_setting",
+            roles=[role.id],
+            custom_props={"is_superuser": False},
+        )
+
+    def test_scope_applies_when_row_security_is_on(self):
+        from core.models import target_queryset
+
+        with override_settings(ROW_SECURITY=True):
+            base = self.Claim.objects.all()
+            self.assertTrue(self.Claim.filter_location(self.user))
+            self.assertIn(
+                "tblHF", str(self.Claim.get_queryset(base, self.user).query)
+            )
+            self.assertIn(
+                "tblHF", str(target_queryset(self.Claim, self.user).query)
+            )
+
+    def test_scope_is_a_no_op_when_row_security_is_off(self):
+        from core.models import target_queryset
+
+        with override_settings(ROW_SECURITY=False):
+            base = self.Claim.objects.all()
+            self.assertEqual(self.Claim.filter_location(self.user), [])
+            self.assertNotIn(
+                "tblHF", str(self.Claim.get_queryset(base, self.user).query)
+            )
+            self.assertNotIn(
+                "tblHF", str(target_queryset(self.Claim, self.user).query)
+            )
+
+    def test_anonymous_is_not_filtered_when_row_security_is_off(self):
+        from django.contrib.auth.models import AnonymousUser
+
+        with override_settings(ROW_SECURITY=False):
+            self.assertEqual(self.Claim.filter_location(AnonymousUser()), [])
