@@ -598,6 +598,17 @@ class OpenIMISMutation(graphene.relay.ClientIDMutation):
 
         metadata = {}
         try:
+            # Re-read the stored input: a queued task or a receiver may have
+            # rewritten it since this request loaded the log. A failed re-read
+            # (row gone) keeps the in-memory content.
+            try:
+                mutation_log.refresh_from_db(fields=["json_content"])
+            except Exception:
+                logger.debug(
+                    "[OpenIMISMutation %s] could not re-read json_content",
+                    mutation_log.id,
+                )
+            content_read = mutation_log.json_content
             if mutation_log.json_content:
                 metadata = json.loads(mutation_log.json_content)
             elif data:
@@ -640,8 +651,21 @@ class OpenIMISMutation(graphene.relay.ClientIDMutation):
                     # into it. So mask again at write time, so that this path
                     # cannot reintroduce what the masking has just removed.
                     metadata = scrub_secrets(metadata)
-                    mutation_log.json_content = json.dumps(metadata, cls=OpenIMISJSONEncoder)
-                    MutationLog.objects.filter(id=mutation_log.id).update(json_content=mutation_log.json_content)
+                    new_content = json.dumps(metadata, cls=OpenIMISJSONEncoder)
+                    # Compare-and-set: the row is written only while it still
+                    # holds the content this block read, so a rewrite made
+                    # meanwhile by a worker or a receiver is never replaced.
+                    written = MutationLog.objects.filter(
+                        id=mutation_log.id, json_content=content_read
+                    ).update(json_content=new_content)
+                    if written:
+                        mutation_log.json_content = new_content
+                    else:
+                        logger.debug(
+                            "[OpenIMISMutation %s] json_content changed "
+                            "meanwhile, metadata not written back",
+                            mutation_log.id,
+                        )
         except Exception as exc:
             # Metadata is best-effort: the mutation itself already succeeded or
             # failed above, so don't fail the response over it -- but don't
