@@ -312,7 +312,22 @@ class InteractiveUser(OpenIMISMigrationModel):
 
     @property
     def user(self):
-        return self.user_set.first()
+        # The linked core user is looked up once per instance: a rights check
+        # reaches this property many times per request. The memo lives on the
+        # instance only and is dropped by refresh_from_db(); it is not part of
+        # the cached model data (clean_fk only copies fields), so an instance
+        # rebuilt from the object cache starts without it. A missing link is
+        # not memoised.
+        linked = self.__dict__.get("_linked_core_user")
+        if linked is None:
+            linked = self.user_set.first()
+            if linked is not None:
+                self.__dict__["_linked_core_user"] = linked
+        return linked
+
+    def refresh_from_db(self, *args, **kwargs):
+        self.__dict__.pop("_linked_core_user", None)
+        return super().refresh_from_db(*args, **kwargs)
 
     @stored_password.setter
     def stored_password(self, value):
